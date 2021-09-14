@@ -1,14 +1,14 @@
 We use the `python3` programs found in `visualisation/custom_plotters/bench/atomic_broadcast` for plotting. 
 
 ### General Performance
-1. Put average execution time found in `results/general/summary/ATOMICBROADCAST.data` here (ADD LINK). Also put the CIs calculated with `StudentTConfidenceInterval` here (ADD LINK).
+1. Put average execution time found in `results/general/summary/ATOMICBROADCAST.data` and the CIs calculated with `StudentTConfidenceInterval` ([here](https://github.com/anonsub0/kompicsbenches/blob/main/visualisation/custom_plotters/bench/atomic_broadcast/plot_normal.py#L23-L31)).
 2. `python3 plot_normal.py`. File will be `normal.pdf`
 
 ### Full Partition
 1. Put the windowed meta results into a directory and run: `python3 plot_periodic -s <path to directory>`. Will be `periodic.pdf`
 
 ### Chained Partition
-1. Put the windowed meta results here (ADD link).
+1. Put the windowed meta results [here](https://github.com/anonsub0/kompicsbenches/blob/main/visualisation/custom_plotters/bench/atomic_broadcast/plot_chained.py#L11-L13).
 2. `python3 plot_chained.py`. File will be `chained.pdf`
 
 ### Deadlock Partition

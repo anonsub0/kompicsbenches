@@ -17,7 +17,7 @@ Omni-Paxos Experiments
 # Installation Guide
 
 1. Install `zip` and `unzip` with `apt-get install <zip | unzip>`
-2. Run installation script: `./install_dependencies.sh`
+2. Clone this repo and run installation script: `./install_dependencies.sh`
 3. Install specific Rust version and set it to default: `rustup toolchain install nightly-2021-04-25` and `rustup default nightly-2021-04-25`
 
 On client instance:
@@ -32,7 +32,7 @@ On client instance:
 
 6. `ssh` to all servers to authenticate and make sure client can reach servers.
 7. Add all client ip addresses to the file `nodes.conf`. Also add all ip addresses to the file `kompact/configs/atomic_broadcast.conf` under "deployment"
-8. In `bench.sc` set `runnerAddr` (ADD LINK)  to `<client_ip>:45678` and `masterAddr` (ADD LINK) to `<client_ip>:45679`. Furthermore set ssh key here (ADD LINK).
+8. Set `runnerAddr`  to `<client_ip>:45678` and `masterAddr` to `<client_ip>:45679` [here](https://github.com/anonsub0/kompicsbenches/blob/main/bench.sc#L18-L20). Furthermore set ssh key [here](https://github.com/anonsub0/kompicsbenches/blob/main/bench.sc#L326).
 
 # Building
 On all instances:
@@ -86,4 +86,4 @@ On client instance:
 All results, meta results and logs will be at: `meta_results/<branch_name>.zip`
 
 # Plotting
-See Plotting.md
+See [Plotting.md](https://github.com/anonsub0/kompicsbenches/blob/main/Plotting.md).
