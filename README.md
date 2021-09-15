@@ -83,7 +83,7 @@ On client instance:
 3. run for each server instance: `scp <instance_name>@<instance_ip>:~/kompicsbenches/zipped/<branch_name>.zip`
 4. `./zip_logs_results.sh`
 
-All results, meta results and logs will be at: `meta_results/<branch_name>.zip`
+All results, meta results and logs will be at: `zipped/<branch_name>.zip`
 
 # Plotting
 See [Plotting.md](https://github.com/anonsub0/kompicsbenches/blob/main/Plotting.md).
