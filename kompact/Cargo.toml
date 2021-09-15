@@ -6,7 +6,7 @@ edition = "2018"
 [dependencies]
 #kompact 				= { git = "https://github.com/kompics/kompact"}
 kompact 				= { git = "https://github.com/kompics/kompact", rev = "94956af" }
-omnipaxos               = { git = "https://github.com/anonsub0/omnipaxos", features = ["batch_accept"] }
+omnipaxos               = { git = "https://github.com/anonsub0/omnipaxos", rev = "888fc06", features = ["batch_accept"] }
 benchmark_suite_shared 	= { path = "../shared_rust/" }
 protobuf        		= "2"
 futures         		= "0.1"
