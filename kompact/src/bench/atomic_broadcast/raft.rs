@@ -24,6 +24,8 @@ use crate::{
     partitioning_actor::{PartitioningActorMsg, PartitioningActorSer},
     serialiser_ids::ATOMICBCAST_ID,
 };
+#[cfg(feature = "measure_io")]
+use chrono::{DateTime, Utc};
 use hashbrown::{HashMap, HashSet};
 use kompact::prelude::*;
 use protobuf::Message as PbMessage;
@@ -35,8 +37,6 @@ use tikv_raft::{
     prelude::{Entry, Message as TikvRaftMsg, *},
     StateRole,
 };
-#[cfg(feature = "measure_io")]
-use chrono::{DateTime, Utc};
 
 const COMMUNICATOR: &str = "communicator";
 const DELAY: Duration = Duration::from_millis(0);
@@ -69,13 +69,14 @@ where
     cached_client: Option<ActorPath>,
     current_leader: u64,
     experiment_params: ExperimentParams,
+    prevote_checkquorum: bool
 }
 
 impl<S> RaftComp<S>
 where
     S: RaftStorage + Send + Clone + 'static,
 {
-    pub fn with(initial_config: Vec<u64>, experiment_params: ExperimentParams) -> Self {
+    pub fn with(initial_config: Vec<u64>, experiment_params: ExperimentParams, prevote_checkquorum: bool) -> Self {
         RaftComp {
             ctx: ComponentContext::uninitialised(),
             pid: 0,
@@ -90,6 +91,7 @@ where
             cached_client: None,
             current_leader: 0,
             experiment_params,
+            prevote_checkquorum
         }
     }
 
@@ -106,12 +108,8 @@ where
         let max_batch_size = config["raft"]["max_batch_size"]
             .as_i64()
             .expect("Failed to load max_batch_size") as u64;
-        let pre_vote = config["raft"]["pre_vote"]
-            .as_bool()
-            .expect("Failed to load pre_vote");
-        let check_quorum = config["raft"]["check_quorum"]
-            .as_bool()
-            .expect("Failed to load check_quorum");
+        let pre_vote = self.prevote_checkquorum;
+        let check_quorum = self.prevote_checkquorum;
         // convert from ms to logical clock ticks
         let election_tick = election_timeout / tick_period;
         let heartbeat_tick = leader_hb_period / tick_period;
@@ -255,7 +253,11 @@ where
                 let total = io_windows
                     .iter()
                     .fold(IOMetaData::default(), |sum, (ts, io_meta)| {
-                        str.push_str(&format!("{:?}, {:?}\n", DateTime::<Utc>::from(*ts), io_meta));
+                        str.push_str(&format!(
+                            "{:?}, {:?}\n",
+                            DateTime::<Utc>::from(*ts),
+                            io_meta
+                        ));
                         sum + *io_meta
                     });
                 writeln!(
@@ -713,7 +715,10 @@ where
                 }
             }
             if leader != self.current_leader {
-                info!(self.ctx.log(), "New leader: {}, old: {}", leader, self.current_leader);
+                info!(
+                    self.ctx.log(),
+                    "New leader: {}, old: {}", leader, self.current_leader
+                );
                 self.current_leader = leader;
                 let notify_client = if self.state == State::Election {
                     self.state = State::Running;
