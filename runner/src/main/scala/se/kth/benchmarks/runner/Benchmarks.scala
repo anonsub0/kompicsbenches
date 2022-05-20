@@ -292,7 +292,7 @@ object Benchmarks extends ParameterDescriptionImplicits {
       List("fully_connected")
     );
 
-  private val atomicBroadcastSpace = fullyConnectedExperiments.append(networkScenariosExperiments).append(chainedScenarioExperiments).append(reconfigurationExperiments);
+  private val atomicBroadcastSpace = fullyConnectedExperiments.append(networkScenariosExperiments).append(chainedScenarioExperiments);
 
   private val latencySpace = ParameterSpacePB
     .cross(
