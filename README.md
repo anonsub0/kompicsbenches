@@ -39,13 +39,26 @@ On all instances:
 
 # Running
 On client instance (after built on all instances):
-`./bench.sc remote --impls KOMPACTMIX --benchmarks ATOMICBROADCAST --runName <name of experiment>`
+`./bench.sc remote --impls KOMPACTMIX --benchmarks ATOMICBROADCAST --runName <branchName>`
 
-This runs the **General Performance, Partial Connectivity, and Reconfiguration experiments.**
+This runs the **General Performance and Partial Connectivity experiments.**
+
+## Reconfiguration experiments
+On client and server instances:
+1. Switch branch to `reconfig`.
+(Optional: To collect IO metadata run `./build.sc --useOnly kompact;` on all server instances)
+
+On client instance:
+
+2. Rebuild runner: `./build.sc --useOnly runner;`
+3. Run experiment (see "Running")
 
 ## Leader Election Experiments
-On client instance:
+On client and server instances:
 1. Switch branch to `leader`.
+
+On client instance:
+
 2. Rebuild runner: `./build.sc --useOnly runner;`
 3. Make sure to update `nodes.conf` with new ip addresses and put the straggler server i.e. with weaker cpu or worse location as `1` in `kompact/configs/atomic_broadcast.conf`
 4. Run experiment (see "Running")
