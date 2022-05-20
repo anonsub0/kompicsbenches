@@ -311,7 +311,7 @@ object Benchmarks extends ParameterDescriptionImplicits {
     invoke = (stub, request: AtomicBroadcastRequest) => {
       stub.atomicBroadcast(request)
     },
-    space = atomicBroadcastSpace
+    space = reconfigurationExperiments
       .msg[AtomicBroadcastRequest] {
         case (a, nn, np, cp, r, rp, ns) =>
           AtomicBroadcastRequest(
