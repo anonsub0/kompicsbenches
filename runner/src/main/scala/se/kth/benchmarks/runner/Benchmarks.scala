@@ -248,11 +248,11 @@ object Benchmarks extends ParameterDescriptionImplicits {
   private val reconfig_policy = List("replace-follower", "replace-leader");
   private val network_scenarios = List("quorum_loss", "constrained_election")
 
-  private val fullyConnectedExperiments = ParameterSpacePB // test space without reconfig
+  private val leaderExperiments = ParameterSpacePB // test space without reconfig
   .cross(
     List("raft_pv_qc", "paxos"),
-    atomicBroadcastNodes,
-    numProposals,
+    List(3),
+    networkScenarioProposals,
     numConcurrentProposals,
     List("off"),
     List("none"),
@@ -292,8 +292,6 @@ object Benchmarks extends ParameterDescriptionImplicits {
       List("fully_connected")
     );
 
-  private val atomicBroadcastSpace = fullyConnectedExperiments.append(networkScenariosExperiments).append(chainedScenarioExperiments).append(reconfigurationExperiments);
-
   private val latencySpace = ParameterSpacePB
     .cross(
       algorithms,
@@ -311,7 +309,7 @@ object Benchmarks extends ParameterDescriptionImplicits {
     invoke = (stub, request: AtomicBroadcastRequest) => {
       stub.atomicBroadcast(request)
     },
-    space = atomicBroadcastSpace
+    space = leaderExperiments
       .msg[AtomicBroadcastRequest] {
         case (a, nn, np, cp, r, rp, ns) =>
           AtomicBroadcastRequest(
@@ -324,7 +322,7 @@ object Benchmarks extends ParameterDescriptionImplicits {
             networkScenario = ns,
           )
       },
-    testSpace = atomicBroadcastSpace
+    testSpace = leaderExperiments
       .msg[AtomicBroadcastRequest] {
         case (a, nn, np, cp, r, rp, ns) =>
           AtomicBroadcastRequest(
