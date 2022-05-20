@@ -713,6 +713,184 @@ pub mod paxos {
             }
         }
     }
+
+    pub mod vr_leader_election {
+        use super::super::*;
+        use crate::bench::atomic_broadcast::ble::Ballot;
+
+        #[derive(Clone, Debug)]
+        pub enum VRMsg {
+            StartViewChange(Ballot, u64),
+            DoViewChange(Ballot, u64),
+        }
+
+        pub struct VRDeser;
+
+        const START_VIEWCHANGE_ID: u8 = 1;
+        const DO_VIEWCHANGE_ID: u8 = 2;
+
+        impl Serialisable for VRMsg {
+            fn ser_id(&self) -> SerId {
+                serialiser_ids::VR_ID
+            }
+
+            fn size_hint(&self) -> Option<usize> {
+                Some(55)
+            }
+
+            fn serialise(&self, buf: &mut dyn BufMut) -> Result<(), SerError> {
+                match self {
+                    VRMsg::StartViewChange(b, from) => {
+                        buf.put_u8(START_VIEWCHANGE_ID);
+                        buf.put_u32(b.n);
+                        buf.put_u64(b.pid);
+                        buf.put_u64(*from);
+                    }
+                    VRMsg::DoViewChange(b, from) => {
+                        buf.put_u8(DO_VIEWCHANGE_ID);
+                        buf.put_u32(b.n);
+                        buf.put_u64(b.pid);
+                        buf.put_u64(*from);
+                    }
+                }
+                Ok(())
+            }
+
+            fn local(self: Box<Self>) -> Result<Box<dyn Any + Send>, Box<dyn Serialisable>> {
+                Ok(self)
+            }
+        }
+
+        impl Deserialiser<VRMsg> for VRDeser {
+            const SER_ID: u64 = serialiser_ids::VR_ID;
+
+            fn deserialise(buf: &mut dyn Buf) -> Result<VRMsg, SerError> {
+                match buf.get_u8() {
+                    START_VIEWCHANGE_ID => {
+                        let n = buf.get_u32();
+                        let pid = buf.get_u64();
+                        let b = Ballot::with(n, pid);
+                        let from = buf.get_u64();
+                        Ok(VRMsg::StartViewChange(b, from))
+                    }
+                    DO_VIEWCHANGE_ID => {
+                        let n = buf.get_u32();
+                        let pid = buf.get_u64();
+                        let b = Ballot::with(n, pid);
+                        let from = buf.get_u64();
+                        Ok(VRMsg::DoViewChange(b, from))
+                    }
+                    _ => Err(SerError::InvalidType(
+                        "Found unkown id but expected VRMsg".into(),
+                    )),
+                }
+            }
+        }
+    }
+
+    pub mod mp_leader_election {
+        use super::super::*;
+        use crate::bench::atomic_broadcast::ble::Ballot;
+
+        #[derive(Clone, Debug)]
+        pub enum HeartbeatMsg {
+            Request(HeartbeatRequest),
+            Reply(HeartbeatReply),
+        }
+
+        #[derive(Clone, Debug)]
+        pub struct HeartbeatRequest {
+            pub round: u32,
+        }
+
+        impl HeartbeatRequest {
+            pub fn with(round: u32) -> HeartbeatRequest {
+                HeartbeatRequest { round }
+            }
+        }
+
+        #[derive(Clone, Debug)]
+        pub struct HeartbeatReply {
+            pub round: u32,
+            pub ballot: Ballot,
+            pub current_leader: Ballot,
+        }
+
+        impl HeartbeatReply {
+            pub fn with(round: u32, ballot: Ballot, current_leader: Ballot) -> HeartbeatReply {
+                HeartbeatReply {
+                    round,
+                    ballot,
+                    current_leader,
+                }
+            }
+        }
+
+        pub struct MPLeaderSer;
+
+        const HB_REQ_ID: u8 = 1;
+        const HB_REP_ID: u8 = 2;
+
+        impl Serialisable for HeartbeatMsg {
+            fn ser_id(&self) -> u64 {
+                serialiser_ids::MP_ID
+            }
+
+            fn size_hint(&self) -> Option<usize> {
+                Some(55)
+            }
+
+            fn serialise(&self, buf: &mut dyn BufMut) -> Result<(), SerError> {
+                match self {
+                    HeartbeatMsg::Request(req) => {
+                        buf.put_u8(HB_REQ_ID);
+                        buf.put_u32(req.round);
+                    }
+                    HeartbeatMsg::Reply(rep) => {
+                        buf.put_u8(HB_REP_ID);
+                        buf.put_u32(rep.round);
+                        buf.put_u32(rep.ballot.n);
+                        buf.put_u64(rep.ballot.pid);
+                        buf.put_u32(rep.current_leader.n);
+                        buf.put_u64(rep.current_leader.pid);
+                    }
+                }
+                Ok(())
+            }
+
+            fn local(self: Box<Self>) -> Result<Box<dyn Any + Send>, Box<dyn Serialisable>> {
+                Ok(self)
+            }
+        }
+
+        impl Deserialiser<HeartbeatMsg> for MPLeaderSer {
+            const SER_ID: u64 = serialiser_ids::MP_ID;
+
+            fn deserialise(buf: &mut dyn Buf) -> Result<HeartbeatMsg, SerError> {
+                match buf.get_u8() {
+                    HB_REQ_ID => {
+                        let round = buf.get_u32();
+                        let hb_req = HeartbeatRequest::with(round);
+                        Ok(HeartbeatMsg::Request(hb_req))
+                    }
+                    HB_REP_ID => {
+                        let round = buf.get_u32();
+                        let n = buf.get_u32();
+                        let pid = buf.get_u64();
+                        let ballot = Ballot::with(n, pid);
+                        let n = buf.get_u32();
+                        let pid = buf.get_u64();
+                        let current_leader = Ballot::with(n, pid);
+                        let hb_rep = HeartbeatReply::with(round, ballot, current_leader);
+                        Ok(HeartbeatMsg::Reply(hb_rep))
+                    }
+                    _ => Err(SerError::InvalidType(
+                        "Found unkown id but expected HeartbeatMessage".into(),
+                    )),
+                }
+            }
+        }
+    }
 }
 
 /*** Shared Messages***/
