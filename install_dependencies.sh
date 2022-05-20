@@ -8,6 +8,8 @@ curl -sL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x2EE0EA64E40A89
 sudo apt-get update
 sudo apt install make
 sudo apt install build-essential
+sudo apt-get install zip
+sudo apt-get install unzip
 
 # JDK
 sudo apt-get install default-jdk -y
@@ -22,6 +24,8 @@ sudo apt-get install sbt
 # Rustup
 curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain nightly
 source $HOME/.cargo/env
+rustup toolchain install nightly-2021-04-25
+rustup default nightly-2021-04-25
 
 # Ammonite
 sudo sh -c '(echo "#!/usr/bin/env sh" && curl -L https://github.com/com-lihaoyi/Ammonite/releases/download/2.3.8/2.12-2.3.8) > /usr/local/bin/amm && chmod +x /usr/local/bin/amm'

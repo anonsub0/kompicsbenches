@@ -6,7 +6,7 @@ edition = "2018"
 [dependencies]
 #kompact 				= { git = "https://github.com/kompics/kompact"}
 kompact 				= { git = "https://github.com/kompics/kompact", rev = "94956af" }
-omnipaxos               = { git = "https://github.com/anonsub0/omnipaxos", rev = "888fc06", features = ["batch_accept"] }
+omnipaxos               = { git = "https://github.com/anonsub0/omnipaxos", features = ["batch_accept"] }
 benchmark_suite_shared 	= { path = "../shared_rust/" }
 protobuf        		= "2"
 futures         		= "0.1"
@@ -49,4 +49,4 @@ periodic_client_logging = []
 periodic_replica_logging = []
 simulate_partition = [] # simulate livelock and deadlock scenarios
 
-default = ["use_pid_map", "measure_io", "preloaded_log"]
+default = ["simulate_partition", "use_pid_map", "track_latency"]
