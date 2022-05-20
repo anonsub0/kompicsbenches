@@ -38,12 +38,16 @@ On all instances:
 `./build.sc --useOnly shared_scala; ./build.sc --useOnly runner; ./build.sc --useOnly kompact`
 
 # Running
+Pre-requisite: 1 client + 5 server instances.
+
 On client instance (after built on all instances):
 `./bench.sc remote --impls KOMPACTMIX --benchmarks ATOMICBROADCAST --runName <branchName>`
 
 This runs the **General Performance and Partial Connectivity experiments.**
 
 ## Reconfiguration experiments
+Pre-requisite: 1 client + 8 server instances.
+
 On client and server instances:
 1. Switch branch to `reconfig`.
 (Optional: To collect IO metadata run `./build.sc --useOnly kompact;` on all server instances)
@@ -54,6 +58,8 @@ On client instance:
 3. Run experiment (see "Running")
 
 ## Leader Election Experiments
+Pre-requisite: 1 client + 3 server instances.
+
 On client and server instances:
 1. Switch branch to `leader`.
 
