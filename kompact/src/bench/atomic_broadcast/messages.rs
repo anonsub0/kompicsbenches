@@ -1,6 +1,6 @@
 extern crate raft as tikv_raft;
 
-use crate::{bench::atomic_broadcast::atomic_broadcast::ReconfigurationPolicy, serialiser_ids};
+use crate::{bench::atomic_broadcast::benchmark_master::ReconfigurationPolicy, serialiser_ids};
 use kompact::prelude::*;
 use protobuf::{parse_from_bytes, Message};
 use rand::Rng;
@@ -788,6 +788,51 @@ pub mod paxos {
         }
     }
 
+    pub mod participant {
+        use super::super::*;
+
+        #[derive(Clone, Debug)]
+        pub struct Ping {
+            pub round: u64,
+            pub leader_index: u64,
+        }
+
+        pub struct MPLeaderSer;
+
+        impl Serialisable for Ping {
+            fn ser_id(&self) -> u64 {
+                serialiser_ids::MP_PARTICIPANT_ID
+            }
+
+            fn size_hint(&self) -> Option<usize> {
+                None
+            }
+
+            fn serialise(&self, buf: &mut dyn BufMut) -> Result<(), SerError> {
+                buf.put_u64(self.round);
+                buf.put_u64(self.leader_index);
+                Ok(())
+            }
+
+            fn local(self: Box<Self>) -> Result<Box<dyn Any + Send>, Box<dyn Serialisable>> {
+                Ok(self)
+            }
+        }
+
+        impl Deserialiser<Ping> for MPLeaderSer {
+            const SER_ID: u64 = serialiser_ids::MP_PARTICIPANT_ID;
+
+            fn deserialise(buf: &mut dyn Buf) -> Result<Ping, SerError> {
+                let round = buf.get_u64();
+                let leader_index = buf.get_u64();
+                Ok(Ping {
+                    round,
+                    leader_index,
+                })
+            }
+        }
+    }
+
     pub mod mp_leader_election {
         use super::super::*;
         use crate::bench::atomic_broadcast::ble::Ballot;
@@ -1193,9 +1238,12 @@ const DISCONNECT_ID: u8 = 1;
 const RECOVER_ID: u8 = 2;
 
 #[cfg(feature = "simulate_partition")]
+type Delay = bool;
+
+#[cfg(feature = "simulate_partition")]
 #[derive(Clone, Debug)]
 pub enum PartitioningExpMsg {
-    DisconnectPeers(Vec<u64>, Option<u64>), // option to disconnect one of the nodes later
+    DisconnectPeers((Vec<u64>, Delay), Option<u64>), // option to disconnect one of the nodes later
     RecoverPeers,
 }
 
@@ -1209,6 +1257,7 @@ impl Deserialiser<PartitioningExpMsg> for PartitioningExpMsgDeser {
     fn deserialise(buf: &mut dyn Buf) -> Result<PartitioningExpMsg, SerError> {
         match buf.get_u8() {
             DISCONNECT_ID => {
+                let delay = if buf.get_u8() > 0 { true } else { false };
                 let mut peers = vec![];
                 let peers_len = buf.get_u32();
                 for _ in 0..peers_len {
@@ -1216,7 +1265,10 @@ impl Deserialiser<PartitioningExpMsg> for PartitioningExpMsgDeser {
                 }
                 let dp = buf.get_u64();
                 let delayed_peer = if dp > 0 { Some(dp) } else { None };
-                Ok(PartitioningExpMsg::DisconnectPeers(peers, delayed_peer))
+                Ok(PartitioningExpMsg::DisconnectPeers(
+                    (peers, delay),
+                    delayed_peer,
+                ))
             }
             RECOVER_ID => Ok(PartitioningExpMsg::RecoverPeers),
             _ => Err(SerError::InvalidType(
@@ -1238,8 +1290,13 @@ impl Serialisable for PartitioningExpMsg {
 
     fn serialise(&self, buf: &mut dyn BufMut) -> Result<(), SerError> {
         match self {
-            PartitioningExpMsg::DisconnectPeers(peers, lagging_peer) => {
+            PartitioningExpMsg::DisconnectPeers((peers, delay), lagging_peer) => {
                 buf.put_u8(DISCONNECT_ID);
+                if *delay {
+                    buf.put_u8(1);
+                } else {
+                    buf.put_u8(0);
+                }
                 buf.put_u32(peers.len() as u32);
                 for pid in peers {
                     buf.put_u64(*pid);

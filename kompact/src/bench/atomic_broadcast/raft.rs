@@ -5,21 +5,24 @@ use super::{
     messages::{StopMsg as NetStopMsg, StopMsgDeser, *},
     storage::raft::*,
 };
-#[cfg(test)]
-use crate::bench::atomic_broadcast::atomic_broadcast::tests::SequenceResp;
 #[cfg(feature = "simulate_partition")]
 use crate::bench::atomic_broadcast::messages::{PartitioningExpMsg, PartitioningExpMsgDeser};
+#[cfg(feature = "measure_io")]
+use crate::bench::atomic_broadcast::util::exp_util::persist_io_metadata;
+#[cfg(feature = "simulate_partition")]
+use crate::bench::atomic_broadcast::util::exp_util::LAGGING_DELAY_FACTOR;
 #[cfg(feature = "periodic_replica_logging")]
-use crate::bench::atomic_broadcast::util::exp_params::WINDOW_DURATION;
+use crate::bench::atomic_broadcast::util::exp_util::WINDOW_DURATION;
 #[cfg(feature = "measure_io")]
 use crate::bench::atomic_broadcast::util::io_metadata::IOMetaData;
 #[cfg(feature = "simulate_partition")]
 use crate::bench::serialiser_ids::PARTITIONING_EXP_ID;
 use crate::{
     bench::atomic_broadcast::{
-        atomic_broadcast::{Done, ExperimentParams},
+        benchmark::Done,
         client::create_raw_proposal,
         communicator::{AtomicBroadcastCompMsg, CommunicationPort, Communicator, CommunicatorMsg},
+        util::exp_util::ExperimentParams,
     },
     partitioning_actor::{PartitioningActorMsg, PartitioningActorSer},
     serialiser_ids::ATOMICBCAST_ID,
@@ -30,9 +33,9 @@ use hashbrown::{HashMap, HashSet};
 use kompact::prelude::*;
 use protobuf::Message as PbMessage;
 use rand::Rng;
-#[cfg(feature = "measure_io")]
-use std::io::Write;
 use std::{borrow::Borrow, clone::Clone, marker::Send, ops::DerefMut, sync::Arc, time::Duration};
+#[cfg(feature = "measure_io")]
+use std::{io::Write, time::UNIX_EPOCH};
 use tikv_raft::{
     prelude::{Entry, Message as TikvRaftMsg, *},
     StateRole,
@@ -47,8 +50,10 @@ pub enum RaftCompMsg {
     Removed,
     ForwardReconfig(u64, ReconfigurationProposal),
     KillComponents(Ask<(), Done>),
+    /*
     #[cfg(test)]
     GetSequence(Ask<(), SequenceResp>),
+    */
 }
 
 #[derive(ComponentDefinition)]
@@ -69,14 +74,18 @@ where
     cached_client: Option<ActorPath>,
     current_leader: u64,
     experiment_params: ExperimentParams,
-    prevote_checkquorum: bool
+    prevote_checkquorum: bool,
 }
 
 impl<S> RaftComp<S>
 where
     S: RaftStorage + Send + Clone + 'static,
 {
-    pub fn with(initial_config: Vec<u64>, experiment_params: ExperimentParams, prevote_checkquorum: bool) -> Self {
+    pub fn with(
+        initial_config: Vec<u64>,
+        experiment_params: ExperimentParams,
+        prevote_checkquorum: bool,
+    ) -> Self {
         RaftComp {
             ctx: ComponentContext::uninitialised(),
             pid: 0,
@@ -91,28 +100,25 @@ where
             cached_client: None,
             current_leader: 0,
             experiment_params,
-            prevote_checkquorum
+            prevote_checkquorum,
         }
     }
 
     fn create_rawraft_config(&self) -> Config {
         let config = self.ctx.config();
         let max_inflight_msgs = self.experiment_params.max_inflight;
-        let election_timeout = self.experiment_params.election_timeout as usize;
-        let tick_period = config["raft"]["tick_period"]
+        let election_tick = config["raft"]["election_tick"]
             .as_i64()
-            .expect("Failed to load tick_period") as usize;
-        let leader_hb_period = config["raft"]["leader_hb_period"]
+            .expect("Failed to load election_tick") as usize;
+        let heartbeat_tick = config["raft"]["hb_tick"]
             .as_i64()
-            .expect("Failed to load leader_hb_period") as usize;
+            .expect("Failed to load hb_tick") as usize;
         let max_batch_size = config["raft"]["max_batch_size"]
             .as_i64()
             .expect("Failed to load max_batch_size") as u64;
         let pre_vote = self.prevote_checkquorum;
         let check_quorum = self.prevote_checkquorum;
         // convert from ms to logical clock ticks
-        let election_tick = election_timeout / tick_period;
-        let heartbeat_tick = leader_hb_period / tick_period;
         // info!(self.ctx.log(), "RawRaft config: election_tick={}, heartbeat_tick={}", election_tick, heartbeat_tick);
         let max_size_per_msg = max_batch_size;
         let c = Config {
@@ -126,7 +132,7 @@ where
             check_quorum,
             ..Default::default()
         };
-        assert!(c.validate().is_ok(), "Invalid RawRaft config");
+        c.validate().unwrap();
         c
     }
 
@@ -191,7 +197,13 @@ where
             .as_i64()
             .expect("Failed to load max_inflight") as usize;
         let (raft_replica, raft_f) = system.create_and_register(|| {
-            RaftReplica::with(raw_raft, self.actor_ref(), self.peers.len(), max_inflight)
+            RaftReplica::with(
+                raw_raft,
+                self.actor_ref(),
+                self.peers.len(),
+                max_inflight,
+                self.experiment_params.election_timeout_ms,
+            )
         });
         let (communicator, comm_f) = system.create_and_register(|| {
             Communicator::with(
@@ -202,6 +214,12 @@ where
                     .clone(),
             )
         });
+        #[cfg(feature = "simulate_partition")]
+        {
+            let lagging_delay = self.experiment_params.election_timeout_ms / LAGGING_DELAY_FACTOR;
+            communicator
+                .on_definition(|c| c.set_lagging_delay(Duration::from_millis(lagging_delay)));
+        }
         let communicator_alias = format!("{}{}-{}", COMMUNICATOR, self.pid, self.iteration_id);
         let comm_alias_f = system.register_by_alias(&communicator, communicator_alias);
         biconnect_components::<CommunicationPort, _, _>(&communicator, &raft_replica)
@@ -246,33 +264,16 @@ where
     fn stop_components(&mut self) -> Handled {
         #[cfg(feature = "measure_io")]
         {
-            if let Some(communicator) = self.communicator.as_ref() {
-                let mut file = self.experiment_params.get_io_meta_results_file();
-                let io_windows = communicator.on_definition(|c| c.get_io_windows());
-                let mut str = String::new();
-                let total = io_windows
-                    .iter()
-                    .fold(IOMetaData::default(), |sum, (ts, io_meta)| {
-                        str.push_str(&format!(
-                            "{:?}, {:?}\n",
-                            DateTime::<Utc>::from(*ts),
-                            io_meta
-                        ));
-                        sum + *io_meta
-                    });
-                writeln!(
-                    file,
-                    "---------- IO usage node {} in iteration: {} ----------\n
-                    Total Communicator IO: {:?}, cid: {:?}\n{}",
-                    self.pid,
-                    self.iteration_id,
-                    total,
-                    self.ctx.id().to_hyphenated_ref().to_string(),
-                    str
-                )
-                .expect("Failed to write IO results file");
-                file.flush().expect("Failed to flush IO file");
-            }
+            let communicator = self.communicator.as_ref().unwrap();
+            let mut communicator_in_file = self.experiment_params.get_io_file("in", "communicator");
+            let mut communicator_out_file =
+                self.experiment_params.get_io_file("out", "communicator");
+            let io_windows = communicator.on_definition(|c| c.get_io_windows());
+            persist_io_metadata(
+                io_windows,
+                &mut communicator_in_file,
+                &mut communicator_out_file,
+            );
         }
         self.stopped = true;
         // info!(self.ctx.log(), "Stopping components");
@@ -346,17 +347,17 @@ where
             }
             RaftCompMsg::KillComponents(ask) => {
                 return self.kill_components(ask);
-            }
-            #[cfg(test)]
-            RaftCompMsg::GetSequence(ask) => {
-                let raft_replica = self.raft_replica.as_ref().expect("No raft replica");
-                let seq = raft_replica
-                    .actor_ref()
-                    .ask_with(|promise| RaftReplicaMsg::SequenceReq(Ask::new(promise, ())))
-                    .wait();
-                let sr = SequenceResp::with(self.pid, seq);
-                ask.reply(sr).expect("Failed to reply SequenceResp");
-            }
+            } /*
+              #[cfg(test)]
+              RaftCompMsg::GetSequence(ask) => {
+                  let raft_replica = self.raft_replica.as_ref().expect("No raft replica");
+                  let seq = raft_replica
+                      .actor_ref()
+                      .ask_with(|promise| RaftReplicaMsg::SequenceReq(Ask::new(promise, ())))
+                      .wait();
+                  let sr = SequenceResp::with(self.pid, seq);
+                  ask.reply(sr).expect("Failed to reply SequenceResp");
+              }*/
         }
         Handled::Ok
     }
@@ -409,8 +410,8 @@ where
                 match_deser! {m {
                     msg(p): PartitioningExpMsg [using PartitioningExpMsgDeser] => {
                         match p {
-                            PartitioningExpMsg::DisconnectPeers(peers, lagging_peer) => {
-                                self.communicator.as_ref().expect("No Raft communicator").on_definition(|c| c.disconnect_peers(peers, lagging_peer));
+                            PartitioningExpMsg::DisconnectPeers((peers, delay), lagging_peer) => {
+                                self.communicator.as_ref().expect("No Raft communicator").on_definition(|c| c.disconnect_peers(peers, delay, lagging_peer));
                             }
                             PartitioningExpMsg::RecoverPeers => {
                                 self.communicator.as_ref().expect("No Raft communicator").on_definition(|c| c.recover_peers());
@@ -505,6 +506,7 @@ where
     hb_reconfig: Option<ReconfigurationProposal>,
     max_inflight: usize,
     stop_ask: Option<Ask<(), ()>>,
+    election_timeout_ms: u64,
 }
 
 impl<S> ComponentLifecycle for RaftReplica<S>
@@ -514,6 +516,12 @@ where
     fn on_start(&mut self) -> Handled {
         let bc = BufferConfig::default();
         self.ctx.borrow().init_buffers(Some(bc), None);
+        /*
+        // Force elect leader in Raft for steady state in WAN
+        if self.raw_raft.raft.id == (self.num_peers + 1) as u64 {
+            self.raw_raft.campaign();
+        }
+        */
         self.start_timers();
         Handled::Ok
     }
@@ -628,6 +636,7 @@ where
         replica: ActorRef<RaftCompMsg>,
         num_peers: usize,
         max_inflight: usize,
+        election_timeout_ms: u64,
     ) -> RaftReplica<S> {
         RaftReplica {
             ctx: ComponentContext::uninitialised(),
@@ -645,6 +654,7 @@ where
             hb_reconfig: None,
             max_inflight,
             stop_ask: None,
+            election_timeout_ms,
         }
     }
 
@@ -653,10 +663,12 @@ where
         let outgoing_period = config["experiment"]["outgoing_period"]
             .as_duration()
             .expect("Failed to load outgoing_period");
-        let tick_period = config["raft"]["tick_period"]
+        let election_tick = config["raft"]["election_tick"]
             .as_i64()
-            .expect("Failed to load tick_period") as u64;
+            .expect("Failed to load election_tick") as u64;
+        let tick_period = self.election_timeout_ms / election_tick;
         let ready_timer = self.schedule_periodic(DELAY, outgoing_period, move |c, _| c.on_ready());
+        info!(self.ctx.log(), "Creating tick timer: {}", tick_period);
         let tick_timer =
             self.schedule_periodic(DELAY, Duration::from_millis(tick_period), move |rc, _| {
                 rc.tick()
@@ -866,27 +878,16 @@ where
                                                                   // campaign later if we are not removed
                                     let mut rng = rand::thread_rng();
                                     let config = self.ctx.config();
-                                    let tick_period = config["raft"]["tick_period"]
-                                        .as_i64()
-                                        .expect("Failed to load tick_period")
-                                        as usize;
-                                    let election_timeout = config["experiment"]["election_timeout"]
-                                        .as_i64()
-                                        .expect("Failed to load election_timeout")
-                                        as usize;
+                                    let timeout = self.election_timeout_ms;
                                     let initial_election_factor = config["experiment"]
                                         ["initial_election_factor"]
                                         .as_i64()
                                         .expect("Failed to load initial_election_factor")
-                                        as usize;
-                                    // randomize with ticks to ensure at least one tick difference in timeout
-                                    let intial_timeout_ticks =
-                                        (election_timeout / initial_election_factor) / tick_period;
-                                    let rnd = rng
-                                        .gen_range(intial_timeout_ticks, 10 * intial_timeout_ticks);
-                                    let timeout = rnd * tick_period;
+                                        as u64;
+                                    let initial_timeout = timeout / initial_election_factor;
+                                    let rnd = rng.gen_range(initial_timeout, 2 * initial_timeout);
                                     self.schedule_once(
-                                        Duration::from_millis(timeout as u64),
+                                        Duration::from_millis(rnd as u64),
                                         move |c, _| c.try_campaign_leader(),
                                     );
                                 }

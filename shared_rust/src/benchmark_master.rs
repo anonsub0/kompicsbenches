@@ -27,6 +27,7 @@ pub fn run(
     wait_for: usize,
     benchmarks: Box<dyn BenchmarkFactory>,
     logger: Logger,
+    run_id: String,
 ) -> () {
     let (check_in_sender, check_in_receiver) = cbchannel::unbounded();
     let (bench_sender, bench_receiver) = cbchannel::unbounded();
@@ -37,6 +38,7 @@ pub fn run(
         wait_for,
         check_in_receiver,
         bench_receiver,
+        run_id
     );
 
     // MASTER HANDLER
@@ -137,6 +139,7 @@ pub fn run(
     inst.start();
 }
 
+#[allow(dead_code)]
 #[derive(Clone)]
 pub(crate) struct ClientEntry {
     address: String,
@@ -232,6 +235,7 @@ struct BenchmarkMaster {
     meta:           DeploymentMetaData,
     check_in_queue: cbchannel::Receiver<distributed::ClientInfo>,
     bench_queue:    cbchannel::Receiver<BenchRequest>,
+    run_id: String,
 }
 
 impl BenchmarkMaster {
@@ -240,15 +244,17 @@ impl BenchmarkMaster {
         wait_for: usize,
         check_in_queue: cbchannel::Receiver<distributed::ClientInfo>,
         bench_queue: cbchannel::Receiver<BenchRequest>,
+        run_id: String,
     ) -> BenchmarkMaster {
         BenchmarkMaster {
             logger,
             wait_for,
             clients: Vec::new(),
             state: StateHolder::init(),
-            meta: DeploymentMetaData::new(0),
+            meta: DeploymentMetaData::new(0, run_id.clone()),
             check_in_queue,
             bench_queue,
+            run_id
         }
     }
 
@@ -262,6 +268,7 @@ impl BenchmarkMaster {
         }
         self.meta = DeploymentMetaData::new(
             self.clients.len().try_into().expect("Too many clients to fit metadata!"),
+            self.run_id.clone()
         );
         loop {
             match self.state.get() {
@@ -444,8 +451,7 @@ impl BenchmarkMaster {
                 state_copy
                     .cas(State::RUN, State::CLEANUP)
                     .expect("Wasn't running before cleanup!?!");
-                let itf: impl Future<Item = (DistributedIteration, bool), Error = grpc::Error> =
-                    it.cleanup();
+                let itf = it.cleanup();
                 let state_copy2 = state_copy.clone();
                 let itlf = itf.map(move |(it, is_final)| {
                     if is_final {
@@ -735,6 +741,7 @@ enum State {
     STOPPED,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 enum StateError {
     InvalidTransition { from: State, to: State, expected: State },

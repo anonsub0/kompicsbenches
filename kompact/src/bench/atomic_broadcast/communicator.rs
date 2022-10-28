@@ -1,7 +1,7 @@
 extern crate raft as tikv_raft;
 
 #[cfg(feature = "measure_io")]
-use crate::bench::atomic_broadcast::util::exp_params::*;
+use crate::bench::atomic_broadcast::util::exp_util::*;
 #[cfg(feature = "measure_io")]
 use crate::bench::atomic_broadcast::util::io_metadata::IOMetaData;
 use crate::bench::atomic_broadcast::{
@@ -15,6 +15,8 @@ use crate::bench::atomic_broadcast::{
 use hashbrown::HashMap;
 use kompact::prelude::*;
 use omnipaxos::messages::Message as RawPaxosMsg;
+#[cfg(feature = "simulate_partition")]
+use std::time::Duration;
 
 #[cfg(feature = "measure_io")]
 use omnipaxos::messages::PaxosMsg;
@@ -57,6 +59,8 @@ pub struct Communicator {
     io_windows: Vec<(SystemTime, IOMetaData)>,
     #[cfg(feature = "simulate_partition")]
     disconnected_peers: Vec<u64>,
+    #[cfg(feature = "simulate_partition")]
+    lagging_delay: Option<Duration>,
 }
 
 impl Communicator {
@@ -72,7 +76,14 @@ impl Communicator {
             io_windows: vec![],
             #[cfg(feature = "simulate_partition")]
             disconnected_peers: vec![],
+            #[cfg(feature = "simulate_partition")]
+            lagging_delay: None,
         }
+    }
+
+    #[cfg(feature = "simulate_partition")]
+    pub fn set_lagging_delay(&mut self, d: Duration) {
+        self.lagging_delay = Some(d);
     }
 
     fn get_actorpath(&self, id: u64) -> &ActorPath {
@@ -124,21 +135,29 @@ impl Communicator {
     }
 
     #[cfg(feature = "simulate_partition")]
-    pub fn disconnect_peers(&mut self, peers: Vec<u64>, lagging_peer: Option<u64>) {
+    pub fn disconnect_peers(&mut self, peers: Vec<u64>, delay: bool, lagging_peer: Option<u64>) {
         if let Some(lp) = lagging_peer {
             // disconnect from lagging peer first
             self.disconnected_peers.push(lp);
-        }
-        let a = peers.clone();
-        let lagging_delay = self.ctx.config()["partition_experiment"]["lagging_delay"]
-            .as_duration()
-            .expect("No lagging duration!");
-        self.schedule_once(lagging_delay, move |c, _| {
-            for pid in a {
-                c.disconnected_peers.push(pid);
+            let a = peers.clone();
+            let lagging_delay = self.lagging_delay.expect("No lagging delay");
+            self.schedule_once(lagging_delay, move |c, _| {
+                for pid in a {
+                    c.disconnected_peers.push(pid);
+                }
+                Handled::Ok
+            });
+        } else {
+            if delay {
+                let lagging_delay = self.lagging_delay.expect("No lagging delay");
+                self.schedule_once(lagging_delay, move |c, _| {
+                    c.disconnected_peers = peers;
+                    Handled::Ok
+                });
+            } else {
+                self.disconnected_peers = peers;
             }
-            Handled::Ok
-        });
+        }
     }
 
     #[cfg(feature = "simulate_partition")]

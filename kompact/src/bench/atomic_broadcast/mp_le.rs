@@ -14,9 +14,9 @@ use std::time::Duration;
 
 #[derive(ComponentDefinition)]
 pub struct MultiPaxosLeaderComp {
-    // TODO decouple from kompact, similar style to tikv_raft with tick() replacing timers
     ctx: ComponentContext<Self>,
     ble_port: ProvidedPort<BallotLeaderElection>,
+    #[allow(dead_code)]
     pid: u64,
     pub(crate) peers: Vec<ActorPath>,
     hb_round: u32,
@@ -24,7 +24,6 @@ pub struct MultiPaxosLeaderComp {
     current_ballot: Ballot, // (round, pid)
     leader: Option<Ballot>,
     hb_delay: u64,
-    delta: u64,
     pub majority: usize,
     timer: Option<ScheduledTimer>,
     stopped: bool,
@@ -36,6 +35,8 @@ pub struct MultiPaxosLeaderComp {
     io_metadata: IOMetaData,
     #[cfg(feature = "simulate_partition")]
     disconnected_peers: Vec<u64>,
+    #[cfg(feature = "simulate_partition")]
+    lagging_delay: Option<Duration>,
 }
 
 impl MultiPaxosLeaderComp {
@@ -43,7 +44,6 @@ impl MultiPaxosLeaderComp {
         peers: Vec<ActorPath>,
         pid: u64,
         hb_delay: u64,
-        delta: u64,
         quick_timeout: bool,
         initial_leader: Option<Leader<Ballot>>,
         initial_election_factor: u64,
@@ -75,7 +75,6 @@ impl MultiPaxosLeaderComp {
             current_ballot: initial_ballot,
             leader,
             hb_delay,
-            delta,
             timer: None,
             stopped: false,
             stopped_peers: HashSet::with_capacity(n),
@@ -86,6 +85,8 @@ impl MultiPaxosLeaderComp {
             io_metadata: IOMetaData::default(),
             #[cfg(feature = "simulate_partition")]
             disconnected_peers: vec![],
+            #[cfg(feature = "simulate_partition")]
+            lagging_delay: None,
         }
     }
 
@@ -103,6 +104,11 @@ impl MultiPaxosLeaderComp {
         self.quick_timeout = false;
         self.ble_port.trigger(Leader::with(l.pid, leader_ballot));
     }*/
+
+    #[cfg(feature = "simulate_partition")]
+    pub fn set_lagging_delay(&mut self, d: Duration) {
+        self.lagging_delay = Some(d);
+    }
 
     fn check_leader(&mut self) {
         let ballots = std::mem::take(&mut self.ballots);
@@ -168,15 +174,12 @@ impl MultiPaxosLeaderComp {
     }
 
     #[cfg(feature = "simulate_partition")]
-    pub fn disconnect_peers(&mut self, peers: Vec<u64>, lagging_peer: Option<u64>) {
-        // info!(self.ctx.log(), "SIMULATE PARTITION: {:?}, lagging: {:?}", peers, lagging_peer);
+    pub fn disconnect_peers(&mut self, peers: Vec<u64>, delay: bool, lagging_peer: Option<u64>) {
         if let Some(lp) = lagging_peer {
             // disconnect from lagging peer first
             self.disconnected_peers.push(lp);
             let a = peers.clone();
-            let lagging_delay = self.ctx.config()["partition_experiment"]["lagging_delay"]
-                .as_duration()
-                .expect("No lagging duration!");
+            let lagging_delay = self.lagging_delay.expect("No lagging delay");
             self.schedule_once(lagging_delay, move |c, _| {
                 for pid in a {
                     c.disconnected_peers.push(pid);
@@ -184,7 +187,15 @@ impl MultiPaxosLeaderComp {
                 Handled::Ok
             });
         } else {
-            self.disconnected_peers = peers;
+            if delay {
+                let lagging_delay = self.lagging_delay.expect("No lagging delay");
+                self.schedule_once(lagging_delay, move |c, _| {
+                    c.disconnected_peers = peers;
+                    Handled::Ok
+                });
+            } else {
+                self.disconnected_peers = peers;
+            }
         }
     }
 
@@ -276,9 +287,6 @@ impl Actor for MultiPaxosLeaderComp {
                                 let top_pid = rep.current_leader.pid;
                                 self.ble_port.trigger(Leader::with(top_pid, rep.current_leader));
                             }
-                        } else {
-                            trace!(self.ctx.log(), "Got late hb reply. HB delay: {}", self.hb_delay);
-                            self.hb_delay += self.delta;
                         }
                     },
                     _ => {},

@@ -1,5 +1,4 @@
 use super::{
-    atomic_broadcast::ExperimentParams,
     communicator::{AtomicBroadcastCompMsg, CommunicationPort, Communicator, CommunicatorMsg},
     messages::{
         paxos::{
@@ -9,11 +8,10 @@ use super::{
         StopMsg as NetStopMsg, *,
     },
 };
-#[cfg(test)]
-use crate::bench::atomic_broadcast::atomic_broadcast::tests::SequenceResp;
+
 use crate::{
     bench::atomic_broadcast::{
-        atomic_broadcast::Done,
+        benchmark::Done,
         ble::{Ballot, BallotLeaderComp, BallotLeaderElection, Stop as BLEStop},
     },
     partitioning_actor::{PartitioningActorMsg, PartitioningActorSer},
@@ -27,18 +25,20 @@ use std::{fmt::Debug, ops::DerefMut, sync::Arc, time::Duration};
 use crate::bench::atomic_broadcast::messages::paxos::SegmentIndex;
 use omnipaxos::{leader_election::*, paxos::*, storage::*};
 
-use crate::bench::atomic_broadcast::client::create_raw_proposal;
 #[cfg(feature = "measure_io")]
-use crate::bench::atomic_broadcast::{util::exp_params::*, util::io_metadata::IOMetaData};
+use crate::bench::atomic_broadcast::util::io_metadata::IOMetaData;
+use crate::bench::atomic_broadcast::{client::create_raw_proposal, util::exp_util::*};
 #[cfg(feature = "measure_io")]
 use chrono::{DateTime, Utc};
 #[cfg(feature = "measure_io")]
 use std::time::SystemTime;
 
 #[cfg(feature = "periodic_replica_logging")]
-use crate::bench::atomic_broadcast::util::exp_params::WINDOW_DURATION;
+use crate::bench::atomic_broadcast::util::exp_util::WINDOW_DURATION;
 #[cfg(feature = "measure_io")]
 use std::io::Write;
+#[cfg(feature = "measure_io")]
+use std::time::UNIX_EPOCH;
 
 #[cfg(feature = "simulate_partition")]
 use crate::bench::atomic_broadcast::messages::{PartitioningExpMsg, PartitioningExpMsgDeser};
@@ -365,11 +365,7 @@ where
             )
         });
         /*** create and register BLE ***/
-        let election_timeout = self.experiment_params.election_timeout;
-        let config = self.ctx.config();
-        let ble_delta = config["paxos"]["ble_delta"]
-            .as_i64()
-            .expect("Failed to load get_decided_period");
+        let election_timeout = self.experiment_params.election_timeout_ms;
         let initial_election_factor = self.experiment_params.initial_election_factor;
 
         let ble_alias = format!("{}{},{}-{}", BLE, self.pid, config_id, self.iteration_id);
@@ -379,8 +375,7 @@ where
                     BallotLeaderComp::with(
                         ble_peers,
                         self.pid,
-                        election_timeout as u64,
-                        ble_delta as u64,
+                        election_timeout,
                         ble_quick_start,
                         skip_prepare_n,
                         initial_election_factor,
@@ -416,7 +411,6 @@ where
                         ble_peers,
                         self.pid,
                         election_timeout as u64,
-                        ble_delta as u64,
                         ble_quick_start,
                         skip_prepare_n,
                         initial_election_factor,
@@ -436,6 +430,25 @@ where
         /*** connect components ***/
         biconnect_components::<CommunicationPort, _, _>(&communicator, &paxos)
             .expect("Could not connect Communicator and PaxosComp!");
+
+        #[cfg(feature = "simulate_partition")]
+        {
+            let lagging_delay_ms =
+                self.experiment_params.election_timeout_ms / LAGGING_DELAY_FACTOR;
+            let lagging_delay = Duration::from_millis(lagging_delay_ms);
+            communicator.on_definition(|c| c.set_lagging_delay(lagging_delay));
+            match &le_comp {
+                LeaderElectionComp::BLE(ble) => {
+                    ble.on_definition(|c| c.set_lagging_delay(lagging_delay))
+                }
+                LeaderElectionComp::VR(vr) => {
+                    vr.on_definition(|c| c.set_lagging_delay(lagging_delay))
+                }
+                LeaderElectionComp::MultiPaxos(mp) => {
+                    mp.on_definition(|c| c.set_lagging_delay(lagging_delay))
+                }
+            }
+        }
 
         self.paxos_replicas.push(paxos);
         self.le_comps.push(le_comp);
@@ -547,64 +560,57 @@ where
         if let Some(timer) = self.io_timer.take() {
             self.cancel_timer(timer);
         }
-        let mut file = self.experiment_params.get_io_meta_results_file();
-        writeln!(
-            file,
-            "\n---------- IO usage node {} in iteration: {} ----------",
-            self.pid, self.iteration_id
-        )
-        .expect("Failed to write IO file");
         if !self.io_windows.is_empty() || self.io_metadata != IOMetaData::default() {
+            let mut paxos_in_file = self.experiment_params.get_io_file("in", "paxos");
+            let mut paxos_out_file = self.experiment_params.get_io_file("out", "paxos");
+
             self.io_windows.push((SystemTime::now(), self.io_metadata));
             self.io_metadata.reset();
-            let mut str = String::new();
-            let total = self
-                .io_windows
-                .iter()
-                .fold(IOMetaData::default(), |sum, (ts, io_meta)| {
-                    str.push_str(&format!(
-                        "{:?}, {:?}\n",
-                        DateTime::<Utc>::from(*ts),
-                        io_meta
-                    ));
-                    sum + (*io_meta)
-                });
-            writeln!(file, "Total PaxosComp IO: {:?}\n{}", total, str)
-                .expect("Failed to write IO file");
+            persist_io_metadata(
+                std::mem::take(&mut self.io_windows),
+                &mut paxos_in_file,
+                &mut paxos_out_file,
+            );
         }
-        for communicator in &self.communicator_comps {
+        for (id, communicator) in self.communicator_comps.iter().enumerate() {
+            let config_id = id + 1;
+            let mut communicator_in_file = self
+                .experiment_params
+                .get_io_file("in", &format!("communicator{}", config_id));
+            let mut communicator_out_file = self
+                .experiment_params
+                .get_io_file("out", &format!("communicator{}", config_id));
             let io_windows = communicator.on_definition(|c| c.get_io_windows());
-            let mut str = String::new();
-            let total = io_windows
-                .iter()
-                .fold(IOMetaData::default(), |sum, (ts, io_meta)| {
-                    str.push_str(&format!(
-                        "{:?}, {:?}\n",
-                        DateTime::<Utc>::from(*ts),
-                        io_meta
-                    ));
-                    sum + *io_meta
-                });
-            writeln!(
-                file,
-                "Total Communicator IO: {:?}, cid: {:?}\n{}",
-                total,
-                communicator.id().to_hyphenated_ref().to_string(),
-                str
-            )
-            .expect("Failed to write IO results file");
+            persist_io_metadata(
+                io_windows,
+                &mut communicator_in_file,
+                &mut communicator_out_file,
+            );
         }
-        for ble in &self.le_comps {
-            let io = ble.on_definition(|c| c.get_io_metadata());
-            writeln!(
-                file,
-                "Total BLE IO: {:?}, cid: {:?}",
-                io,
-                ble.id().to_hyphenated_ref().to_string(),
-            )
-            .expect("Failed to write IO results file");
-        }
-        file.flush().expect("Failed to flush IO file");
+        let mut ble_in_file = self.experiment_params.get_io_file("in", "ble-bytes");
+        let mut ble_out_file = self.experiment_params.get_io_file("out", "ble-bytes");
+        let total = self.le_comps.iter().fold(IOMetaData::default(), |sum, le| {
+            let io_meta = match le {
+                LeaderElectionComp::BLE(ble) => ble.on_definition(|c| c.get_io_metadata()),
+                LeaderElectionComp::VR(vr) => vr.on_definition(|c| c.get_io_metadata()),
+            };
+            sum + io_meta
+        });
+        let total_received = format!(
+            "total | {} {}",
+            total.get_num_received(),
+            total.get_received_bytes()
+        );
+        let total_sent = format!(
+            "total | {} {}",
+            total.get_num_received(),
+            total.get_sent_bytes()
+        );
+        writeln!(ble_in_file, "{}", total_received).expect("Failed to write IO file");
+        writeln!(ble_out_file, "{}", total_sent).expect("Failed to write IO file");
+
+        ble_in_file.flush().expect("Failed to flush BLE in file");
+        ble_out_file.flush().expect("Failed to flush BLE out file");
     }
 
     fn stop_components(&mut self) -> Handled {
@@ -1078,8 +1084,10 @@ where
     PendingReconfig(Vec<u8>),
     Reconfig(FinalMsg<S>),
     KillComponents(Ask<(), Done>),
+    /*
     #[cfg(test)]
     GetSequence(Ask<(), SequenceResp>),
+    */
     #[cfg(feature = "measure_io")]
     LocalSegmentTransferMeta(usize),
 }
@@ -1192,55 +1200,56 @@ where
             #[cfg(feature = "measure_io")]
             PaxosCompMsg::LocalSegmentTransferMeta(size) => {
                 self.io_metadata.update_sent_with_size(size);
-            }
-            #[cfg(test)]
-            PaxosCompMsg::GetSequence(ask) => {
-                let mut all_entries = vec![];
-                let mut unique = HashSet::new();
-                for i in 1..self.active_config.id {
-                    if let Some(seq) = self.prev_sequences.get(&i) {
-                        let sequence = seq.get_sequence();
-                        for entry in sequence {
-                            if let Entry::Normal(n) = entry {
-                                let id = n.as_slice().get_u64();
-                                all_entries.push(id);
-                                unique.insert(id);
-                            }
-                        }
-                    }
-                }
-                if self.active_config.id > 0 {
-                    let active_paxos = self.paxos_replicas.last().unwrap();
-                    let sequence = active_paxos
-                        .actor_ref()
-                        .ask_with(|promise| PaxosReplicaMsg::SequenceReq(Ask::new(promise, ())))
-                        .wait();
-                    for entry in sequence {
-                        if let Entry::Normal(n) = entry {
-                            let id = n.as_slice().get_u64();
-                            all_entries.push(id);
-                            unique.insert(id);
-                        }
-                    }
-                    let min = unique.iter().min();
-                    let max = unique.iter().max();
-                    debug!(
-                        self.ctx.log(),
-                        "Got SequenceReq: my seq_len: {}, unique: {}, min: {:?}, max: {:?}",
-                        all_entries.len(),
-                        unique.len(),
-                        min,
-                        max
-                    );
-                } else {
-                    warn!(
-                        self.ctx.log(),
-                        "Got SequenceReq but no active paxos: {}", self.active_config.id
-                    );
-                }
-                let sr = SequenceResp::with(self.pid, all_entries);
-                ask.reply(sr).expect("Failed to reply SequenceResp");
-            }
+            } /*
+              #[cfg(test)]
+              PaxosCompMsg::GetSequence(ask) => {
+                  let mut all_entries = vec![];
+                  let mut unique = HashSet::new();
+                  for i in 1..self.active_config.id {
+                      if let Some(seq) = self.prev_sequences.get(&i) {
+                          let sequence = seq.get_sequence();
+                          for entry in sequence {
+                              if let Entry::Normal(n) = entry {
+                                  let id = n.as_slice().get_u64();
+                                  all_entries.push(id);
+                                  unique.insert(id);
+                              }
+                          }
+                      }
+                  }
+                  if self.active_config.id > 0 {
+                      let active_paxos = self.paxos_replicas.last().unwrap();
+                      let sequence = active_paxos
+                          .actor_ref()
+                          .ask_with(|promise| PaxosReplicaMsg::SequenceReq(Ask::new(promise, ())))
+                          .wait();
+                      for entry in sequence {
+                          if let Entry::Normal(n) = entry {
+                              let id = n.as_slice().get_u64();
+                              all_entries.push(id);
+                              unique.insert(id);
+                          }
+                      }
+                      let min = unique.iter().min();
+                      let max = unique.iter().max();
+                      debug!(
+                          self.ctx.log(),
+                          "Got SequenceReq: my seq_len: {}, unique: {}, min: {:?}, max: {:?}",
+                          all_entries.len(),
+                          unique.len(),
+                          min,
+                          max
+                      );
+                  } else {
+                      warn!(
+                          self.ctx.log(),
+                          "Got SequenceReq but no active paxos: {}", self.active_config.id
+                      );
+                  }
+                  let sr = SequenceResp::with(self.pid, all_entries);
+                  ask.reply(sr).expect("Failed to reply SequenceResp");
+              }
+              */
         }
         Handled::Ok
     }
@@ -1276,20 +1285,20 @@ where
                 match_deser! {m {
                     msg(p): PartitioningExpMsg [using PartitioningExpMsgDeser] => {
                         match p {
-                            PartitioningExpMsg::DisconnectPeers(peers, lagging_peer) => {
+                            PartitioningExpMsg::DisconnectPeers((peers, delay), lagging_peer) => {
                                 for communicator in &self.communicator_comps {
-                                    communicator.on_definition(|c| c.disconnect_peers(peers.clone(), lagging_peer.clone()));
+                                    communicator.on_definition(|c| c.disconnect_peers(peers.clone(), delay, lagging_peer.clone()));
                                 }
                                 for le in &self.le_comps {
                                     match le {
                                         LeaderElectionComp::BLE(ble) => {
-                                            ble.on_definition(|ble| ble.disconnect_peers(peers.clone(), lagging_peer.clone()));
+                                            ble.on_definition(|ble| ble.disconnect_peers(peers.clone(), delay, lagging_peer.clone()));
                                         }
                                         LeaderElectionComp::VR(vr) => {
-                                            vr.on_definition(|vr| vr.disconnect_peers(peers.clone(), lagging_peer.clone()));
+                                            vr.on_definition(|vr| vr.disconnect_peers(peers.clone(), delay, lagging_peer.clone()));
                                         }
                                         LeaderElectionComp::MultiPaxos(mp) => {
-                                            mp.on_definition(|mp| mp.disconnect_peers(peers.clone(), lagging_peer.clone()));
+                                            mp.on_definition(|mp| mp.disconnect_peers(peers.clone(), delay, lagging_peer.clone()));
                                         }
                                     }
                                 }
@@ -1708,12 +1717,7 @@ where
                     self.stop_ask = Some(ask);
                 }
             }
-            #[cfg(test)]
-            PaxosReplicaMsg::SequenceReq(a) => {
-                // for testing only
-                let seq = self.paxos.get_sequence();
-                a.reply(seq).expect("Failed to reply to GetAllEntries");
-            }
+            _ => {}
         }
         Handled::Ok
     }

@@ -35,6 +35,8 @@ pub struct VRLeaderElectionComp {
     io_metadata: IOMetaData,
     #[cfg(feature = "simulate_partition")]
     disconnected_peers: Vec<u64>,
+    #[cfg(feature = "simulate_partition")]
+    lagging_delay: Option<Duration>,
 }
 
 impl VRLeaderElectionComp {
@@ -68,6 +70,8 @@ impl VRLeaderElectionComp {
             io_metadata: IOMetaData::default(),
             #[cfg(feature = "simulate_partition")]
             disconnected_peers: vec![],
+            #[cfg(feature = "simulate_partition")]
+            lagging_delay: None,
         }
     }
 
@@ -78,6 +82,11 @@ impl VRLeaderElectionComp {
         self.ble_port.trigger(Leader::with(l.pid, l.round));
     }
     */
+
+    #[cfg(feature = "simulate_partition")]
+    pub fn set_lagging_delay(&mut self, d: Duration) {
+        self.lagging_delay = Some(d);
+    }
 
     fn new_hb_round(&mut self) {
         let delay = if self.quick_timeout {
@@ -160,14 +169,12 @@ impl VRLeaderElectionComp {
     }
 
     #[cfg(feature = "simulate_partition")]
-    pub fn disconnect_peers(&mut self, peers: Vec<u64>, lagging_peer: Option<u64>) {
+    pub fn disconnect_peers(&mut self, peers: Vec<u64>, delay: bool, lagging_peer: Option<u64>) {
         if let Some(lp) = lagging_peer {
             // disconnect from lagging peer first
             self.disconnected_peers.push(lp);
             let a = peers.clone();
-            let lagging_delay = self.ctx.config()["partition_experiment"]["lagging_delay"]
-                .as_duration()
-                .expect("No lagging duration!");
+            let lagging_delay = self.lagging_delay.expect("No lagging delay");
             self.schedule_once(lagging_delay, move |c, _| {
                 for pid in a {
                     c.disconnected_peers.push(pid);
@@ -175,7 +182,15 @@ impl VRLeaderElectionComp {
                 Handled::Ok
             });
         } else {
-            self.disconnected_peers = peers;
+            if delay {
+                let lagging_delay = self.lagging_delay.expect("No lagging delay");
+                self.schedule_once(lagging_delay, move |c, _| {
+                    c.disconnected_peers = peers;
+                    Handled::Ok
+                });
+            } else {
+                self.disconnected_peers = peers;
+            }
         }
     }
 

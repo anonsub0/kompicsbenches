@@ -235,64 +235,83 @@ object Benchmarks extends ParameterDescriptionImplicits {
   );
 
   /*** split into different parameter spaces as some parameters are dependent on each other ***/
+  private val atomicBroadcastTestNodes = List(3);
+  private val atomicBroadcastTestDuration= List(1*60);
+  private val atomicBroadcastTestConcurrentProposals = List(200L);
 
-  private val atomicBroadcastNodes = List(3, 5);
-  private val networkScenarioProposals = List(5L.mio);
-  private val networkScenarioConcurrentProposals = List(50L.k);
-
-  private val numProposals = List(20L.mio);
-  private val numConcurrentProposals = List(500L, 5L.k, 50L.k);
+  private val atomicBroadcastNodes = List(3);
+  private val atomicBroadcastDuration = List(5*60);
+  private val atomicBroadcastConcurrentProposals = List(500L, 5L.k, 50L.k);
 
   private val algorithms = List("vr", "multi-paxos", "paxos", "raft", "raft_pv_qc");
   private val reconfig = List("single", "majority");
   private val reconfig_policy = List("replace-follower", "replace-leader");
-  private val network_scenarios = List("quorum_loss", "constrained_election")
+  private val network_scenarios = List("fully_connected", "quorum_loss-60", "constrained_election-60", "chained-60")
+  private val election_timeout_ms = List(10L.k)
 
-  private val fullyConnectedExperiments = ParameterSpacePB // test space without reconfig
-  .cross(
-    List("raft_pv_qc", "paxos"),
-    atomicBroadcastNodes,
-    numProposals,
-    numConcurrentProposals,
-    List("off"),
-    List("none"),
-    List("fully_connected"),
-  );
+  private val atomicBroadcastNormalTestSpace = ParameterSpacePB // test space without reconfig
+    .cross(
+      algorithms,
+      atomicBroadcastTestNodes,
+      atomicBroadcastTestDuration,
+      atomicBroadcastTestConcurrentProposals,
+      List("off"),
+      List("none"),
+      network_scenarios,
+      election_timeout_ms
+    );
 
-  private val networkScenariosExperiments = ParameterSpacePB
+  private val atomicBroadcastReconfigTestSpace = ParameterSpacePB // test space with reconfig
+    .cross(
+      algorithms,
+      atomicBroadcastTestNodes,
+      atomicBroadcastTestDuration,
+      atomicBroadcastTestConcurrentProposals,
+      reconfig,
+      reconfig_policy,
+      List("fully_connected"),
+      election_timeout_ms
+    );
+
+  private val atomicBroadcastTestSpace = atomicBroadcastNormalTestSpace.append(atomicBroadcastReconfigTestSpace);
+
+  private val atomicBroadcastNormalSpace = ParameterSpacePB
+    .cross(
+      List("paxos", "raft", "raft_pv_qc", "vr"),
+      atomicBroadcastNodes,
+      atomicBroadcastDuration,
+      List(500L),
+      List("off"),
+      List("none"),
+      List("chained-60", "chained-120", "chained-240"),
+      List(5L, 50L, 500L, 5L.k)
+    );
+
+  private val multiPaxosNormalSpace = ParameterSpacePB
+    .cross(
+      List("multi-paxos"),
+      atomicBroadcastNodes,
+      atomicBroadcastDuration,
+      atomicBroadcastConcurrentProposals,
+      List("off"),
+      List("none"),
+      List("fully_connected"),
+      election_timeout_ms
+    );
+
+  private val atomicBroadcastReconfigSpace = ParameterSpacePB
     .cross(
       algorithms,
       atomicBroadcastNodes,
-      networkScenarioProposals,
-      networkScenarioConcurrentProposals,
-      List("off"),
-      List("none"),
-      network_scenarios
-    );
-
-  private val chainedScenarioExperiments = ParameterSpacePB
-  .cross(
-    algorithms,
-    List(3),
-    List(10L.mio),
-    networkScenarioConcurrentProposals,
-    List("off"),
-    List("none"),
-    List("chained")
-  );  
-
-  private val reconfigurationExperiments = ParameterSpacePB
-    .cross(
-      List("raft_pv_qc", "paxos"),
-      List(5),
-      numProposals,
-      numConcurrentProposals,
+      atomicBroadcastDuration,
+      atomicBroadcastConcurrentProposals,
       reconfig,
       reconfig_policy,
-      List("fully_connected")
+      network_scenarios,
+      election_timeout_ms
     );
 
-  private val atomicBroadcastSpace = fullyConnectedExperiments.append(networkScenariosExperiments).append(chainedScenarioExperiments);
+  private val atomicBroadcastSpace = multiPaxosNormalSpace.append(atomicBroadcastNormalSpace);
 
   private val latencySpace = ParameterSpacePB
     .cross(
@@ -302,7 +321,8 @@ object Benchmarks extends ParameterDescriptionImplicits {
       List(1L),
       List("off"),
       List("none"),
-      network_scenarios
+      network_scenarios,
+      election_timeout_ms
     );
 
   val atomicBroadcast = Benchmark(
@@ -313,28 +333,30 @@ object Benchmarks extends ParameterDescriptionImplicits {
     },
     space = atomicBroadcastSpace
       .msg[AtomicBroadcastRequest] {
-        case (a, nn, np, cp, r, rp, ns) =>
+        case (a, nn, d, cp, r, rp, ns, et) =>
           AtomicBroadcastRequest(
             algorithm = a,
             numberOfNodes = nn,
-            numberOfProposals = np,
+            durationSecs = d,
             concurrentProposals = cp,
             reconfiguration = r,
             reconfigPolicy = rp,
             networkScenario = ns,
+            electionTimeoutMs = et,
           )
       },
-    testSpace = atomicBroadcastSpace
+    testSpace = atomicBroadcastNormalTestSpace
       .msg[AtomicBroadcastRequest] {
-        case (a, nn, np, cp, r, rp, ns) =>
+        case (a, nn, d, cp, r, rp, ns, et) =>
           AtomicBroadcastRequest(
             algorithm = a,
             numberOfNodes = nn,
-            numberOfProposals = np,
+            durationSecs = d,
             concurrentProposals = cp,
             reconfiguration = r,
             reconfigPolicy = rp,
             networkScenario = ns,
+            electionTimeoutMs = et,
           )
       }
   );

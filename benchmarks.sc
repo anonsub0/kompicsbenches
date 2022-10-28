@@ -34,7 +34,7 @@ case class BenchmarkRunner(bench: BenchmarkInfo, runner: Runner) {
 	def symbol: String = bench.symbol;
 	def label: String = bench.label;
 	def run(logFolder: Path): Process = {
-		val command = (runner.exec.toString +: runner.args.flatMap(_.s)).toList.asJava;
+		var command = (runner.exec.toString +: runner.args.flatMap(_.s) :+ logFolder.last.toString).toList.asJava;
 		val pb = new ProcessBuilder(command);
 		val env = pb.environment();
 		//env.put("RUST_BACKTRACE", "1"); // TODO remove this for non-testing!

@@ -1,9 +1,12 @@
-pub mod atomic_broadcast;
+pub mod benchmark;
+mod benchmark_client;
+mod benchmark_master;
 mod ble;
 mod client;
 mod communicator;
 mod messages;
 mod mp_le;
+mod multi_paxos;
 mod paxos;
 mod raft;
 mod storage;

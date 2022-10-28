@@ -45,7 +45,6 @@ pub struct BallotLeaderComp {
     candidate: bool,
     leader: Option<Ballot>,
     hb_delay: u64,
-    delta: u64,
     pub majority: usize,
     timer: Option<ScheduledTimer>,
     stopped: bool,
@@ -57,6 +56,8 @@ pub struct BallotLeaderComp {
     io_metadata: IOMetaData,
     #[cfg(feature = "simulate_partition")]
     disconnected_peers: Vec<u64>,
+    #[cfg(feature = "simulate_partition")]
+    lagging_delay: Option<Duration>,
 }
 
 impl BallotLeaderComp {
@@ -64,7 +65,6 @@ impl BallotLeaderComp {
         peers: Vec<ActorPath>,
         pid: u64,
         hb_delay: u64,
-        delta: u64,
         quick_timeout: bool,
         initial_leader: Option<Leader<Ballot>>,
         initial_election_factor: u64,
@@ -97,7 +97,6 @@ impl BallotLeaderComp {
             candidate: true,
             leader,
             hb_delay,
-            delta,
             timer: None,
             stopped: false,
             stopped_peers: HashSet::with_capacity(n),
@@ -108,7 +107,14 @@ impl BallotLeaderComp {
             io_metadata: IOMetaData::default(),
             #[cfg(feature = "simulate_partition")]
             disconnected_peers: vec![],
+            #[cfg(feature = "simulate_partition")]
+            lagging_delay: None,
         }
+    }
+
+    #[cfg(feature = "simulate_partition")]
+    pub fn set_lagging_delay(&mut self, d: Duration) {
+        self.lagging_delay = Some(d);
     }
 
     /// Sets initial state after creation. Should only be used before being started.
@@ -118,10 +124,8 @@ impl BallotLeaderComp {
         self.leader = Some(leader_ballot);
         if l.pid == self.pid {
             self.current_ballot = leader_ballot;
-            self.candidate = true;
         } else {
             self.current_ballot = Ballot::with(0, self.pid);
-            self.candidate = false;
         };
         self.quick_timeout = false;
         self.ble_port.trigger(Leader::with(l.pid, leader_ballot));
@@ -149,7 +153,6 @@ impl BallotLeaderComp {
             );
             self.current_ballot.n = self.leader.unwrap_or_default().n + 1;
             self.leader = None;
-            self.candidate = true;
         } else if self.leader != Some(top_ballot) {
             // got a new leader with greater ballot
             self.quick_timeout = false;
@@ -181,6 +184,7 @@ impl BallotLeaderComp {
 
     fn hb_timeout(&mut self) -> Handled {
         if self.ballots.len() + 1 >= self.majority {
+            self.candidate = true;
             self.ballots.push((self.current_ballot, self.candidate));
             self.check_leader();
         } else {
@@ -203,14 +207,12 @@ impl BallotLeaderComp {
     }
 
     #[cfg(feature = "simulate_partition")]
-    pub fn disconnect_peers(&mut self, peers: Vec<u64>, lagging_peer: Option<u64>) {
+    pub fn disconnect_peers(&mut self, peers: Vec<u64>, delay: bool, lagging_peer: Option<u64>) {
         if let Some(lp) = lagging_peer {
             // disconnect from lagging peer first
             self.disconnected_peers.push(lp);
             let a = peers.clone();
-            let lagging_delay = self.ctx.config()["partition_experiment"]["lagging_delay"]
-                .as_duration()
-                .expect("No lagging duration!");
+            let lagging_delay = self.lagging_delay.unwrap();
             self.schedule_once(lagging_delay, move |c, _| {
                 for pid in a {
                     c.disconnected_peers.push(pid);
@@ -218,7 +220,15 @@ impl BallotLeaderComp {
                 Handled::Ok
             });
         } else {
-            self.disconnected_peers = peers;
+            if delay {
+                let lagging_delay = self.lagging_delay.expect("No lagging delay");
+                self.schedule_once(lagging_delay, move |c, _| {
+                    c.disconnected_peers = peers;
+                    Handled::Ok
+                });
+            } else {
+                self.disconnected_peers = peers;
+            }
         }
     }
 
@@ -303,9 +313,6 @@ impl Actor for BallotLeaderComp {
                         }
                         if rep.round == self.hb_round {
                             self.ballots.push((rep.ballot, rep.candidate));
-                        } else {
-                            trace!(self.ctx.log(), "Got late hb reply. HB delay: {}", self.hb_delay);
-                            self.hb_delay += self.delta;
                         }
                     },
                     _ => {},

@@ -36,17 +36,18 @@ impl BenchmarkMain {
         let logger = Logger::root(slog_term::FullFormat::new(plain).build().fuse(), o!());
 
         info!(logger, "The root logger works!");
+        // Args: ["/Users/haraldng/code/kompicsbenches/kompact/target/release/kompact_benchmarks", "127.0.0.1:45678", "127.0.0.1:45679", "3"]
 
         let _scope_guard = slog_scope::set_global_logger(logger.clone());
         let _log_guard = slog_stdlog::init().unwrap();
 
-        if args.len() <= 2 {
+        if args.len() <= 3 {
             // local mode
             let bench_runner_addr: String =
                 args.get(1).map(|s| s.clone()).unwrap_or("127.0.0.1:45678".to_string());
 
             benchmark_runner::run_server(runner, bench_runner_addr, None)
-        } else if args.len() == 3 {
+        } else if args.len() == 4 {
             // client mode
             let master_addr: SocketAddr =
                 args[1].parse().expect("Could not convert arg to socket address!");
@@ -63,7 +64,7 @@ impl BenchmarkMain {
                 logger.new(o!("ty" => "benchmark_client::run")),
             );
             unreachable!("This should not return!");
-        } else if args.len() == 4 {
+        } else if args.len() == 5 {
             // master mode
             let bench_runner_addr: SocketAddr =
                 args[1].parse().expect("Could not convert arg to socket address!");
@@ -72,6 +73,7 @@ impl BenchmarkMain {
             let num_clients: usize = args[3]
                 .parse()
                 .expect("Could not convert arg to unsigned integer number of clients.");
+            let run_id: String = args[4].clone();
             println!(
                 "Running in master mode with runner={}, master={}, #clients={}",
                 bench_runner_addr, master_addr, num_clients
@@ -83,6 +85,7 @@ impl BenchmarkMain {
                 num_clients,
                 benchmarks,
                 logger.new(o!("ty" => "benchmark_master::run")),
+                run_id
             );
             unreachable!("This should not return!");
         } else {
@@ -159,6 +162,8 @@ pub mod test_utils {
 
         let master_logger = logger.clone();
 
+        let run_id = "test".to_string();
+
         let master_handle = std::thread::Builder::new()
             .name("benchmark_master".to_string())
             .spawn(move || {
@@ -169,6 +174,7 @@ pub mod test_utils {
                     num_clients,
                     benchmarks1,
                     master_logger.new(o!("ty" => "benchmark_master::run")),
+                    run_id
                 );
                 info!(master_logger, "Finished master");
             })

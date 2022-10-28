@@ -109,13 +109,16 @@ mod distributed_benchmark {
     #[derive(Debug, Clone)]
     pub struct DeploymentMetaData {
         number_of_clients: u32,
+        run_id: String,
     }
     impl DeploymentMetaData {
-        pub fn new(number_of_clients: u32) -> DeploymentMetaData {
-            DeploymentMetaData { number_of_clients }
+        pub fn new(number_of_clients: u32, run_id: String) -> DeploymentMetaData {
+            DeploymentMetaData { number_of_clients, run_id }
         }
 
         pub fn number_of_clients(&self) -> u32 { self.number_of_clients }
+
+        pub fn run_id(&self) -> &str { self.run_id.as_str() }
     }
 
     pub trait DistributedBenchmark: Send + Sync {
