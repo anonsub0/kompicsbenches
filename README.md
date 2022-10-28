@@ -37,48 +37,11 @@ On all instances:
 
 `./build.sc --useOnly shared_scala; ./build.sc --useOnly runner; ./build.sc --useOnly kompact`
 
-# Running
+# Running (TO BE UPDATED FOR REVISION CHANGES)
 Pre-requisite: 1 client + 5 server instances.
 
 On client instance (after built on all instances):
 `./bench.sc remote --impls KOMPACTMIX --benchmarks ATOMICBROADCAST --runName <branchName>`
-
-This runs the **General Performance and Partial Connectivity experiments.**
-
-## Reconfiguration experiments
-Pre-requisite: 1 client + 8 server instances.
-
-On client and server instances:
-1. Switch branch to `reconfig`.
-(Optional: To collect IO metadata run `./build.sc --useOnly kompact;` on all server instances)
-
-On client instance:
-
-2. Rebuild runner: `./build.sc --useOnly runner;`
-3. Run experiment (see "Running")
-
-## Leader Election Experiments
-Pre-requisite: 1 client + 3 server instances.
-
-On client and server instances:
-1. Switch branch to `leader`.
-
-On client instance:
-
-2. Rebuild runner: `./build.sc --useOnly runner;`
-3. Make sure to update `nodes.conf` with new ip addresses and put the straggler server i.e. with weaker cpu or worse location as `1` in `kompact/configs/atomic_broadcast.conf`
-4. Run experiment (see "Running")
-
-# Collecting Results
-(Optional) Collect all server logs and meta results into one zip file: \
- &nbsp;&nbsp;&nbsp;0. ssh into all server instances and run: `./zip_logs_results.sh <runName>`
-
-On client instance:
-1. `mkdir meta_results/<runName>/remote `
-2. run for each server instance: `scp <instance_name>@<instance_ip>:~/kompicsbenches/zipped/<runName>.zip`
-3. `./zip_logs_results.sh`
-
-All results, meta results and logs will be at: `zipped/<runName>.zip`
 
 # Plotting
 See [Plotting.md](https://github.com/anonsub0/kompicsbenches/blob/main/Plotting.md).
