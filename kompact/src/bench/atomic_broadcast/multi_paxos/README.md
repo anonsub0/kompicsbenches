@@ -1,4 +1,4 @@
-#Implementation Details of Multi-Paxos
+# Implementation Details of Multi-Paxos
 This document describes some implementation details we had to perform while porting the multipaxos implementation from [frankenpaxos](https://github.com/mwhittaker/frankenpaxos/blob/master/shared/src/main/scala/frankenpaxos/multipaxos) to our benchmark repository. The changes are mainly due to the differences in Scala and Rust.
 
 In the source code, almost all functions are commented with a link to its identical version in ``frankenpaxos``. The ones that don't have such a link were required when used with Kompact for starting/stopping timers and sending/receiving messages.
